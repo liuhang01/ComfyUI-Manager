@@ -1,0 +1,89 @@
+name: Register IP233 Manager entry
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  register:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: register-ip233-ai-nodes
+          fetch-depth: 1
+      - name: Add verified catalog entry
+        shell: python
+        run: |
+          import hashlib
+          import json
+          import re
+          import subprocess
+          from pathlib import Path
+
+          base = "15e49ea544a4b20627c2eec01341843e8c4b6d49"
+          expected_blob = "ba74eef713784534b785acf9496e0bb47cd4c66d"
+          expected_result = "df1a11262e8ff351653be3bf6b92afe88d4c4ab9f9e8f365f1969e2d99ef0c5d"
+          head = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+          if head != base:
+              raise RuntimeError("Application branch moved; inspect before rerunning.")
+          path = Path("custom-node-list.json")
+          original_bytes = path.read_bytes()
+          blob = b"blob " + str(len(original_bytes)).encode("ascii") + b"\0" + original_bytes
+          if hashlib.sha1(blob).hexdigest() != expected_blob:
+              raise RuntimeError("Catalog does not match the reviewed upstream blob.")
+          original = original_bytes.decode("utf-8")
+          catalog = json.loads(original)
+          nodes = catalog["custom_nodes"]
+          entry = {
+              "author": "liuhang01",
+              "title": "IP233 Image and Video",
+              "id": "ip233-ai-nodes",
+              "reference": "https://github.com/liuhang01/ComfyUI-IP233-API",
+              "files": ["https://github.com/liuhang01/ComfyUI-IP233-API"],
+              "install_type": "git-clone",
+              "description": "Image generation/editing, video generation, native IMAGE/MASK/VIDEO outputs, and resumable tasks for IP233 Media API (https://new.ip233.com/). Requires an IP233 API key and paid API usage.",
+          }
+          if any(n.get("id") == entry["id"] or n.get("reference") == entry["reference"] for n in nodes):
+              raise RuntimeError("An IP233 entry already exists.")
+          opening = re.search(r'"custom_nodes"\s*:\s*\[', original)
+          if not opening or not nodes:
+              raise RuntimeError("Unexpected catalog shape.")
+          decoder = json.JSONDecoder()
+          cursor = opening.end()
+          last_end = None
+          for _ in nodes:
+              while original[cursor].isspace():
+                  cursor += 1
+              _, last_end = decoder.raw_decode(original, cursor)
+              cursor = last_end
+              while original[cursor].isspace():
+                  cursor += 1
+              if original[cursor] == ",":
+                  cursor += 1
+          if original[cursor] != "]":
+              raise RuntimeError("Unexpected catalog boundary.")
+          addition = "\n".join("        " + line for line in json.dumps(entry, ensure_ascii=False, indent=4).splitlines())
+          updated = original[:last_end] + ",\n" + addition + original[last_end:]
+          catalog["custom_nodes"].append(entry)
+          if json.loads(updated) != catalog:
+              raise RuntimeError("Existing catalog entries were changed.")
+          updated_bytes = updated.encode("utf-8")
+          if hashlib.sha256(updated_bytes).hexdigest() != expected_result:
+              raise RuntimeError("Result differs from the reviewed catalog.")
+          path.write_bytes(updated_bytes)
+          changed = subprocess.check_output(["git", "diff", "--name-only"], text=True).splitlines()
+          if changed != ["custom-node-list.json"]:
+              raise RuntimeError("Unexpected changed files.")
+          print("Verified: 6032 existing entries preserved; one IP233 entry added.")
+      - name: Commit application branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -- custom-node-list.json
+          git commit -m "Register IP233 Image and Video nodes"
+          git push origin HEAD:refs/heads/register-ip233-ai-nodes
